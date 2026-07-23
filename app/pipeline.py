@@ -224,3 +224,57 @@ def get_all_processed_claims():
     # Sort claims by processed time descending
     claims.sort(key=lambda x: x.get("processed_time", ""), reverse=True)
     return claims
+
+def override_duplicate_claim(surrogate_key, new_status="APPROVED", auditor_comment="Manual Auditor Override"):
+    """Overrides a quarantined duplicate claim, updating its Gold report and moving its PDF to archive."""
+    archive_dir = os.path.join(DATA_DIR, "archive")
+    
+    # 1. Update the Gold JSON report file
+    target_data = None
+    target_filepath = None
+    
+    if not os.path.exists(GOLD_DIR):
+        return False
+        
+    for filename in os.listdir(GOLD_DIR):
+        if filename.endswith(".json"):
+            filepath = os.path.join(GOLD_DIR, filename)
+            try:
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+                if data.get("surrogate_key") == surrogate_key:
+                    target_data = data
+                    target_filepath = filepath
+                    break
+            except Exception:
+                continue
+                
+    if not target_data:
+        return False
+        
+    # Update status
+    target_data["claim_status"] = new_status
+    target_data["rejection_reason"] = f"Auditor Override: {auditor_comment}"
+    target_data["is_quarantined"] = False
+    target_data["is_override"] = True
+    target_data["audited_by"] = "Auditor-1"
+    target_data["audited_time"] = datetime.now().isoformat()
+    
+    # Save back
+    with open(target_filepath, "w") as f:
+        json.dump(target_data, f, indent=4)
+        
+    # 2. Find and move PDF from review/ to archive/
+    os.makedirs(archive_dir, exist_ok=True)
+    if os.path.exists(REVIEW_DIR):
+        for filename in os.listdir(REVIEW_DIR):
+            # Check if file name belongs to this claim
+            if surrogate_key[:12] in filename or target_data.get("original_pdf_source") in filename:
+                src_path = os.path.join(REVIEW_DIR, filename)
+                dest_path = os.path.join(archive_dir, filename.replace("DUPLICATE_", "OVERRIDE_"))
+                try:
+                    shutil.move(src_path, dest_path)
+                except Exception:
+                    pass
+    return True
+

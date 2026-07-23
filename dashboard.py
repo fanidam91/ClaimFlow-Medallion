@@ -6,7 +6,7 @@ from datetime import datetime
 
 # Import local modules
 from app.database import load_policies, upsert_policy, init_db
-from app.pipeline import run_medallion_pipeline, get_all_processed_claims, calculate_surrogate_key
+from app.pipeline import run_medallion_pipeline, get_all_processed_claims, calculate_surrogate_key, override_duplicate_claim
 from generate_samples import generate_all_samples
 
 # Initialize folders and default policies file
@@ -322,16 +322,69 @@ with tab2:
         with sub_tab_gold:
             st.json(selected_claim)
 
-# Tab 3: Quarantine Directory
+# Tab 3: Quarantine Directory & Audit Override
 with tab3:
     st.subheader("Quarantined Duplicate Claims")
     st.markdown("If a claim matches an already processed claim's surrogate key (same policy, claimant, date, and amount), the system flags the file and routes the PDF to the review directory.")
     
     review_dir = os.path.join(project_dir, "data", "review")
+    
+    # 1. Audit Override Action Console
+    flagged_claims = [c for c in processed_claims if "DUPLICATE" in str(c.get("claim_status"))]
+    
+    if len(flagged_claims) > 0:
+        st.markdown("---")
+        st.write("##### ⚖️ Auditor Decision Override Console")
+        st.info("If the audit confirms the claim is a legitimate separate request (not a duplicate submission), you can override the status and approve it here.")
+        
+        claim_map = {
+            f"Ref: {c.get('reference_no')} | {c.get('claimant_name')} | ${c.get('claim_amount'):,.2f} ({c.get('processed_time')[:16].replace('T', ' ')})": c
+            for c in flagged_claims
+        }
+        
+        selected_flagged_key = st.selectbox("Select a flagged claim to review:", list(claim_map.keys()))
+        selected_flagged = claim_map[selected_flagged_key]
+        
+        col_aud_c1, col_aud_c2 = st.columns(2)
+        with col_aud_c1:
+            st.write("**Claim Details (from PDF):**")
+            st.write(f"- Claimant Name: `{selected_flagged.get('claimant_name')}`")
+            st.write(f"- Claim Date: `{selected_flagged.get('claim_date')}`")
+            st.write(f"- Claim Amount: `${selected_flagged.get('claim_amount'):,.2f}`")
+            st.write(f"- Reason: `\"{selected_flagged.get('claim_reason')}\"`")
+        with col_aud_c2:
+            st.write("**Policy Details (from DB):**")
+            st.write(f"- Policyholder Name: `{selected_flagged.get('policyholder_db')}`")
+            st.write(f"- Policy Type: `{selected_flagged.get('policy_type_db')}`")
+            st.write(f"- Status: `{selected_flagged.get('policy_status_db')}`")
+            st.write(f"- Coverage Limit: `${selected_flagged.get('coverage_limit_db', 0.0):,.2f}`")
+            
+        audit_note = st.text_input("Auditor Verification Notes / Override Reason", value="Verified as a separate legitimate claim request.")
+        
+        col_btn1, col_btn2, _ = st.columns([1, 1, 2])
+        with col_btn1:
+            if st.button("✅ Approve Override", use_container_width=True):
+                if override_duplicate_claim(selected_flagged.get("surrogate_key"), "APPROVED", audit_note):
+                    st.success("Claim successfully approved and moved out of quarantine!")
+                    st.rerun()
+                else:
+                    st.error("Failed to apply override.")
+        with col_btn2:
+            if st.button("❌ Dismiss / Reject Claim", use_container_width=True):
+                if override_duplicate_claim(selected_flagged.get("surrogate_key"), "REJECTED", f"Auditor Confirmed Duplicate: {audit_note}"):
+                    st.warning("Claim status updated to Rejected.")
+                    st.rerun()
+                else:
+                    st.error("Failed to update status.")
+                    
+        st.markdown("---")
+        
+    # 2. File list
+    st.write("##### Quarantined Files in Review Directory")
     if not os.path.exists(review_dir) or len(os.listdir(review_dir)) == 0:
-        st.success("✅ Clean Audit: No duplicate claims currently in quarantine.")
+        st.success("✅ Clean Audit: No duplicate claim PDF files currently in quarantine.")
     else:
-        st.warning(f"⚠️ Action Required: {len(os.listdir(review_dir))} files flagged as potential duplicate submissions.")
+        st.warning(f"⚠️ Action Required: {len(os.listdir(review_dir))} files flagged as potential duplicate submissions on DBFS/Disk.")
         
         files_in_review = os.listdir(review_dir)
         df_review = []

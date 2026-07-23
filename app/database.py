@@ -1,8 +1,8 @@
 import os
-import json
+import csv
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-POLICIES_FILE = os.path.join(DATA_DIR, "reference_policies.json")
+POLICIES_CSV = os.path.join(DATA_DIR, "reference_policies.csv")
 
 DEFAULT_POLICIES = [
     {
@@ -40,35 +40,50 @@ DEFAULT_POLICIES = [
 ]
 
 def init_db():
-    """Ensure data directory and default policies file exist."""
+    """Ensure data directory and default policies CSV file exist."""
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
     
-    # Also create bronze, silver, gold directories
-    for zone in ["bronze", "silver", "gold", "raw"]:
+    # Create bronze, silver, gold, review, raw directories
+    for zone in ["bronze", "silver", "gold", "raw", "review"]:
         zone_dir = os.path.join(DATA_DIR, zone)
         if not os.path.exists(zone_dir):
             os.makedirs(zone_dir)
 
-    if not os.path.exists(POLICIES_FILE):
-        with open(POLICIES_FILE, "w") as f:
-            json.dump(DEFAULT_POLICIES, f, indent=4)
+    if not os.path.exists(POLICIES_CSV):
+        save_policies(DEFAULT_POLICIES)
 
 def load_policies():
-    """Load the policies from the JSON file."""
+    """Load the policies from the CSV file."""
     init_db()
+    if not os.path.exists(POLICIES_CSV):
+        return DEFAULT_POLICIES
+        
+    policies = []
     try:
-        with open(POLICIES_FILE, "r") as f:
-            return json.load(f)
+        with open(POLICIES_CSV, mode="r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Cast numeric fields
+                row["coverage_limit"] = float(row.get("coverage_limit", 0.0) or 0.0)
+                policies.append(row)
+        return policies
     except Exception as e:
-        print(f"Error loading policies: {e}")
+        print(f"Error loading policies CSV: {e}")
         return DEFAULT_POLICIES
 
 def save_policies(policies):
-    """Save the policies list to the JSON file."""
-    init_db()
-    with open(POLICIES_FILE, "w") as f:
-        json.dump(policies, f, indent=4)
+    """Save the policies list to the CSV file."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    fieldnames = ["reference_no", "policyholder", "policy_type", "policy_status", "coverage_limit", "effective_date"]
+    try:
+        with open(POLICIES_CSV, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for p in policies:
+                writer.writerow(p)
+    except Exception as e:
+        print(f"Error saving policies CSV: {e}")
 
 def get_policy(reference_no):
     """Fetch a policy by its reference number (case-insensitive)."""
@@ -85,7 +100,6 @@ def upsert_policy(policy_data):
     if not ref_no:
         return False
     
-    # Standardize input structure
     new_policy = {
         "reference_no": ref_no,
         "policyholder": policy_data.get("policyholder", "Unknown").strip(),
@@ -95,7 +109,6 @@ def upsert_policy(policy_data):
         "effective_date": policy_data.get("effective_date", "2026-01-01").strip()
     }
     
-    # Update if exists, else append
     updated = False
     for i, p in enumerate(policies):
         if p["reference_no"].strip().upper() == ref_no:

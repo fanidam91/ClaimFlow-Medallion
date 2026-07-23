@@ -60,25 +60,22 @@ print(f"Database schema initialized under: {CATALOG_NAME}.{SCHEMA_NAME}")
 # MAGIC Creates the active policies list that we will match incoming claims against.
 
 # COMMAND ----------
-policies_data = [
-    ("POL-101", "John Smith", "Auto Insurance", "Active", 5000.0, "2025-01-01"),
-    ("POL-102", "Sarah Connor", "Home Insurance", "Active", 10000.0, "2024-06-15"),
-    ("POL-103", "Alice Johnson", "Health Insurance", "Expired", 25000.0, "2023-01-01"),
-    ("POL-104", "Tony Stark", "Commercial Liability", "Active", 500000.0, "2025-01-01")
-]
+import csv
+local_csv = "/tmp/reference_policies.csv"
+with open(local_csv, "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["reference_no", "policyholder", "policy_type", "policy_status", "coverage_limit", "effective_date"])
+    writer.writerows([
+        ("POL-101", "John Smith", "Auto Insurance", "Active", 5000.0, "2025-01-01"),
+        ("POL-102", "Sarah Connor", "Home Insurance", "Active", 10000.0, "2024-06-15"),
+        ("POL-103", "Alice Johnson", "Health Insurance", "Expired", 25000.0, "2023-01-01"),
+        ("POL-104", "Tony Stark", "Commercial Liability", "Active", 500000.0, "2025-01-01")
+    ])
 
-policies_schema = StructType([
-    StructField("reference_no", StringType(), True),
-    StructField("policyholder", StringType(), True),
-    StructField("policy_type", StringType(), True),
-    StructField("policy_status", StringType(), True),
-    StructField("coverage_limit", DoubleType(), True),
-    StructField("effective_date", StringType(), True)
-])
-
-df_policies = spark.createDataFrame(policies_data, schema=policies_schema)
-df_policies.write.format("delta").mode("overwrite").saveAsTable(f"{CATALOG_NAME}.{SCHEMA_NAME}.reference_policies")
-print("Master policy database written to Delta Table successfully.")
+# Copy local file to DBFS reference policies CSV path
+dbutils.fs.cp(f"file:{local_csv}", f"{BASE_STORAGE_PATH}/reference_policies.csv")
+os.remove(local_csv)
+print("Reference policies CSV created on DBFS successfully.")
 
 # COMMAND ----------
 # MAGIC %md
@@ -243,7 +240,11 @@ CREATE TABLE IF NOT EXISTS {CATALOG_NAME}.{SCHEMA_NAME}.gold_claims_report (
 
 # COMMAND ----------
 df_silver_stream = spark.readStream.table(f"{CATALOG_NAME}.{SCHEMA_NAME}.silver_claims")
-df_policies_static = spark.read.table(f"{CATALOG_NAME}.{SCHEMA_NAME}.reference_policies")
+df_policies_static = (spark.read
+                      .format("csv")
+                      .option("header", "true")
+                      .option("inferSchema", "true")
+                      .load(f"{BASE_STORAGE_PATH}/reference_policies.csv"))
 
 # Read Gold table statically to join and look up already processed keys (Duplicates)
 df_gold_static = spark.read.table(f"{CATALOG_NAME}.{SCHEMA_NAME}.gold_claims_report")
